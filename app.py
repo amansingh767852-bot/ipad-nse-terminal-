@@ -1,97 +1,161 @@
 import streamlit as st
 import pandas as pd
-import requests
+from datetime import datetime, timedelta
 import time
-import random
-from datetime import datetime
+import logging
+from pathlib import Path
+import requests
+import zipfile
+import io
 
 st.set_page_config(page_title="Institutional Derivatives Terminal", layout="wide")
 
-# ------------------- Helper Functions -------------------
-def generate_demo_data(symbol):
-    """Generate realistic mock data when live data is unavailable."""
-    random.seed(hash(symbol) % 2**32)
-    
-    if symbol == "NIFTY":
-        base = 22000
-        strikes = list(range(base, base + 4000, 100))
-    elif symbol == "BANKNIFTY":
-        base = 44000
-        strikes = list(range(base, base + 8000, 200))
-    else:
-        base = 20000
-        strikes = list(range(base, base + 3000, 100))
-    
-    expiry = datetime.now().strftime("%d-%b-%Y")
-    opt_list = []
-    for strike in strikes:
-        ce_oi = random.randint(50000, 800000)
-        pe_oi = random.randint(50000, 800000)
-        opt_list.append({
-            'CE OI': ce_oi,
-            'CE Chg OI': random.randint(-20000, 20000),
-            'CE LTP': round(random.uniform(5, 300), 1),
-            'Strike': strike,
-            'PE LTP': round(random.uniform(5, 300), 1),
-            'PE Chg OI': random.randint(-20000, 20000),
-            'PE OI': pe_oi
-        })
-    df_opt = pd.DataFrame(opt_list)
-    
-    fut_list = []
-    for i in range(3):
-        expiry_date = datetime.now().replace(day=28)
-        if i == 1:
-            expiry_date = expiry_date.replace(month=expiry_date.month + 1)
-        elif i == 2:
-            expiry_date = expiry_date.replace(month=expiry_date.month + 2)
-        fut_list.append({
-            'Expiry': expiry_date.strftime('%d-%b-%Y'),
-            'LTP': round(random.uniform(22000, 24000), 2),
-            'Chg%': round(random.uniform(-2, 2), 2),
-            'OI': random.randint(200000, 2000000),
-            'Chg OI%': round(random.uniform(-5, 5), 2)
-        })
-    df_fut = pd.DataFrame(fut_list)
-    
-    total_ce = df_opt['CE OI'].sum()
-    total_pe = df_opt['PE OI'].sum()
-    pcr = round(total_pe / total_ce, 2) if total_ce else 1.2
-    resistance = df_opt.loc[df_opt['CE OI'].idxmax()]['Strike']
-    support = df_opt.loc[df_opt['PE OI'].idxmax()]['Strike']
-    
-    metrics = {
-        'PCR': pcr,
-        'Support': support,
-        'Resistance': resistance,
-        'Expiry': expiry,
-        'Time': datetime.now().strftime("%H:%M:%S"),
-        'Mode': "🔹 DEMO MODE (market closed or offline)"
-    }
-    return df_opt, df_fut, metrics
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+@st.cache_data(ttl=86400)
+def get_previous_trading_day():
+    """Calculate the most recent previous trading day (assuming holidays are ignored)."""
+    today = datetime.now()
+    # Days offset: 1 for Monday-Friday, 3 for Monday (to skip Sat/Sun)
+    # Simple logic: go back 1 day, if it's Saturday go back 2 days, if Sunday go back 1 more day.
+    delta = 1
+    if today.weekday() == 6:  # Sunday
+        delta = 2
+    elif today.weekday() == 0:  # Monday
+        delta = 3
+    prev_day = today - timedelta(days=delta)
+    return prev_day
+
+def fetch_last_eod_data(symbol):
+    """
+    Downloads the latest available F&O bhavcopy and extracts the option chain for the given symbol.
+    """
+    try:
+        from nse import NSE
+        download_folder = Path("./nse_cache")
+        download_folder.mkdir(exist_ok=True)
+        
+        with NSE(download_folder=download_folder, server=True) as nse:
+            # Get the most recent previous trading day
+            last_trading_day = get_previous_trading_day()
+            
+            # Download the F&O bhavcopy for that day
+            bhavcopy_path = nse.fnoBhavcopy(date=last_trading_day, folder=download_folder)
+            if not bhavcopy_path:
+                return None
+                
+            # The bhavcopy is a zip file containing CSV files.
+            # We need to find the specific file containing the option chain for our symbol.
+            # Based on the NSE format, the file name will be like "op<ddmmyy>.csv"
+            # Search for the correct file.
+            import csv
+            with zipfile.ZipFile(bhavcopy_path, 'r') as zip_ref:
+                for file_name in zip_ref.namelist():
+                    if file_name.lower().endswith('.csv'):
+                        with zip_ref.open(file_name) as csv_file:
+                            # Decode bytes to string and create a CSV reader
+                            text_stream = io.TextIOWrapper(csv_file, encoding='utf-8')
+                            reader = csv.DictReader(text_stream)
+                            data = list(reader)
+                            # Check if this file contains data for our symbol
+                            # The symbol in the csv might be in a column like 'SYMBOL' or 'UNDERLYING'
+                            if data and any(row.get('SYMBOL') == symbol or row.get('UNDERLYING') == symbol for row in data):
+                                return data
+            return None
+    except Exception as e:
+        st.warning(f"Could not fetch EOD data: {str(e)}")
+        return None
+
+def generate_closing_data_from_eod(raw_data, symbol):
+    """
+    Convert the raw EOD data into the DataFrame format expected by the app.
+    """
+    try:
+        if not raw_data:
+            return None, None, None
+        
+        # The raw_data is a list of dictionaries from the CSV.
+        # We need to filter for the correct expiry and aggregate per strike.
+        # This is a simplified transformation; you may need to adjust based on actual CSV structure.
+        # Common columns: STRIKE_PR, OPTION_TYPE, OPEN_INT, CHG_IN_OI, CLOSE, etc.
+        opt_list = []
+        for row in raw_data:
+            # Filter for relevant rows based on symbol and option type (CE/PE)
+            # This is a placeholder; actual parsing requires inspection of the CSV structure.
+            strike = row.get('STRIKE_PR')
+            opt_type = row.get('OPTION_TYPE')
+            if opt_type == 'CE':
+                opt_list.append({
+                    'CE OI': int(row.get('OPEN_INT', 0)),
+                    'CE Chg OI': int(row.get('CHG_IN_OI', 0)),
+                    'CE LTP': float(row.get('CLOSE', 0)),
+                    'Strike': strike,
+                    'PE LTP': 0,  # Placeholder
+                    'PE Chg OI': 0,
+                    'PE OI': 0
+                })
+            elif opt_type == 'PE':
+                opt_list.append({
+                    'CE OI': 0,
+                    'CE Chg OI': 0,
+                    'CE LTP': 0,
+                    'Strike': strike,
+                    'PE LTP': float(row.get('CLOSE', 0)),
+                    'PE Chg OI': int(row.get('CHG_IN_OI', 0)),
+                    'PE OI': int(row.get('OPEN_INT', 0))
+                })
+        
+        # Combine CE and PE data for each strike (if needed)
+        df_opt = pd.DataFrame(opt_list)
+        # If there are separate rows for CE and PE, you may need to pivot or merge.
+        # For now, assume the CSV contains separate rows.
+        # Aggregate by strike
+        if not df_opt.empty:
+            df_opt = df_opt.groupby('Strike').sum().reset_index()
+        
+        # Create a simple futures placeholder
+        expiry = datetime.now().strftime("%d-%b-%Y")
+        df_fut = pd.DataFrame([
+            {'Expiry': expiry, 'LTP': 0, 'Chg%': 0, 'OI': 0, 'Chg OI%': 0},
+            {'Expiry': expiry, 'LTP': 0, 'Chg%': 0, 'OI': 0, 'Chg OI%': 0},
+            {'Expiry': expiry, 'LTP': 0, 'Chg%': 0, 'OI': 0, 'Chg OI%': 0}
+        ])
+        
+        total_ce = df_opt['CE OI'].sum()
+        total_pe = df_opt['PE OI'].sum()
+        pcr = round(total_pe / total_ce, 2) if total_ce else 1.2
+        resistance = df_opt.loc[df_opt['CE OI'].idxmax()]['Strike'] if not df_opt.empty else 0
+        support = df_opt.loc[df_opt['PE OI'].idxmax()]['Strike'] if not df_opt.empty else 0
+        
+        metrics = {
+            'PCR': pcr,
+            'Support': support,
+            'Resistance': resistance,
+            'Expiry': expiry,
+            'Time': datetime.now().strftime("%H:%M:%S"),
+            'Mode': "🔹 EOD DATA (last closing data)"
+        }
+        return df_opt, df_fut, metrics
+    except Exception as e:
+        st.error(f"Error processing EOD data: {str(e)}")
+        return None, None, None
 
 def fetch_live_data(symbol):
-    """Try to fetch real data from NSE (works during market hours)."""
-    session = requests.Session()
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        "Accept": "application/json, text/plain, */*",
-        "Accept-Language": "en-US,en;q=0.9",
-        "Referer": "https://www.nseindia.com/",
-    }
-    session.headers.update(headers)
-    
-    base_url = "https://www.nseindia.com"
-    url = f"https://www.nseindia.com/api/option-chain-indices?symbol={symbol}"
-    
+    """Try to fetch real-time data from NSE (works during market hours)."""
     try:
-        session.get(base_url, timeout=15)
-        time.sleep(2)
-        resp = session.get(url, timeout=15)
-        resp.raise_for_status()
-        return resp.json()
+        from nse import NSE
+        download_folder = Path("./nse_cache")
+        download_folder.mkdir(exist_ok=True)
+        with NSE(download_folder=download_folder, server=True) as nse:
+            # Fetch live option chain
+            oc_data = nse.optionchain(symbol=symbol.lower())
+            if oc_data and 'records' in oc_data and oc_data['records'].get('data'):
+                return oc_data
+            return None
     except Exception as e:
-        st.warning(f"Live data not available: {str(e)[:100]}")
+        st.warning(f"Live data not available: {str(e)}")
         return None
 
 def process_live_data(data, symbol):
@@ -123,7 +187,7 @@ def process_live_data(data, symbol):
         })
     df_opt = pd.DataFrame(opt_list)
     
-    # Placeholder futures data
+    # Futures placeholder
     df_fut = pd.DataFrame([
         {'Expiry': expiry, 'LTP': 0, 'Chg%': 0, 'OI': 0, 'Chg OI%': 0},
         {'Expiry': expiry, 'LTP': 0, 'Chg%': 0, 'OI': 0, 'Chg OI%': 0},
@@ -142,7 +206,7 @@ def process_live_data(data, symbol):
         'Resistance': resistance,
         'Expiry': expiry,
         'Time': datetime.now().strftime("%H:%M:%S"),
-        'Mode': "✅ LIVE DATA (real NSE)"
+        'Mode': "✅ LIVE DATA (real-time)"
     }
     return df_opt, df_fut, metrics
 
@@ -150,29 +214,26 @@ def process_live_data(data, symbol):
 st.title("Live NSE Terminal: Option Chain & Futures")
 
 symbol = st.sidebar.selectbox("Select Asset", ["NIFTY", "BANKNIFTY", "FINNIFTY"])
-force_demo = st.sidebar.checkbox("Force Demo Mode (mock data)", value=False)
 
 if st.sidebar.button("Refresh Data"):
     st.cache_data.clear()
     st.rerun()
 
-# Fetch data
-if force_demo:
-    df_opt, df_fut, metrics = generate_demo_data(symbol)
+# Fetch data: try live first, then fallback to EOD
+live_data = fetch_live_data(symbol)
+if live_data:
+    df_opt, df_fut, metrics = process_live_data(live_data, symbol)
 else:
-    live_json = fetch_live_data(symbol)
-    if live_json:
-        df_opt, df_fut, metrics = process_live_data(live_json, symbol)
-        if df_opt is None or df_opt.empty:
-            st.warning("Live data empty – switching to demo mode")
-            df_opt, df_fut, metrics = generate_demo_data(symbol)
+    eod_data = fetch_last_eod_data(symbol)
+    if eod_data:
+        df_opt, df_fut, metrics = generate_closing_data_from_eod(eod_data, symbol)
     else:
-        df_opt, df_fut, metrics = generate_demo_data(symbol)
+        st.error("Unable to fetch any data. Please check your connection or try again later.")
+        st.stop()
 
 # Display
 if metrics:
     st.info(f"{metrics['Mode']} | Last Sync: {metrics['Time']} | Expiry: {metrics['Expiry']}")
-    
     col1, col2, col3 = st.columns(3)
     col1.metric("Put-Call Ratio (PCR)", metrics['PCR'])
     col2.metric("Support Wall (Max PE OI)", f"₹{metrics['Support']}")
@@ -184,7 +245,6 @@ if metrics:
     
     st.subheader("Live Option Chain")
     if not df_opt.empty:
-        # Display plain table without gradients to avoid errors
         st.dataframe(df_opt, use_container_width=True, height=600)
     else:
         st.warning("No option chain data available")
