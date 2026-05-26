@@ -1,5 +1,5 @@
 import streamlit as st
-import requests
+import cloudscraper
 import pandas as pd
 from datetime import datetime
 import time
@@ -9,28 +9,26 @@ st.set_page_config(page_title="Institutional Derivatives Terminal", layout="wide
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
     "Accept-Language": "en-US,en;q=0.9",
-    "Accept-Encoding": "gzip, deflate, br",
-    "Connection": "keep-alive"
+    "Accept-Encoding": "gzip, deflate, br"
 }
 
 @st.cache_data(ttl=60)
 def fetch_nse_data(symbol):
-    session = requests.Session()
-    session.headers.update(HEADERS)
+    # This specifically bypasses the Cloudflare/Akamai firewall
+    scraper = cloudscraper.create_scraper(browser={'browser': 'chrome', 'platform': 'windows', 'mobile': False})
+    
     base_url = "https://www.nseindia.com"
     oc_url = f"https://www.nseindia.com/api/option-chain-indices?symbol={symbol}"
     fut_url = f"https://www.nseindia.com/api/liveEquity-derivatives?symbol={symbol}"
     
     try:
-        # Step 1: Visit main site to get security cookies
-        session.get(base_url, timeout=10)
+        # Step 1: Visit main site to generate human cookies
+        scraper.get(base_url, headers=HEADERS, timeout=10)
+        time.sleep(2) # Pause to act human
         
-        # Step 2: WAIT 2 seconds to act like a human
-        time.sleep(2)
-        
-        # Step 3: Get data
-        oc_resp = session.get(oc_url, timeout=10)
-        fut_resp = session.get(fut_url, timeout=10)
+        # Step 2: Fetch the actual data
+        oc_resp = scraper.get(oc_url, headers=HEADERS, timeout=10)
+        fut_resp = scraper.get(fut_url, headers=HEADERS, timeout=10)
         
         if oc_resp.status_code == 200 and fut_resp.status_code == 200:
             return oc_resp.json(), fut_resp.json()
@@ -99,7 +97,6 @@ st.title("Live NSE Terminal: Option Chain & Futures")
 
 symbol = st.sidebar.selectbox("Select Asset", ["NIFTY", "BANKNIFTY", "FINNIFTY"])
 
-# Upgraded Refresh Button
 if st.sidebar.button("Refresh Data"):
     st.cache_data.clear() # Clears bad data immediately
 
