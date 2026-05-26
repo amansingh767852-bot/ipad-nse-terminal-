@@ -2,34 +2,39 @@ import streamlit as st
 import requests
 import pandas as pd
 from datetime import datetime
+import time
 
 st.set_page_config(page_title="Institutional Derivatives Terminal", layout="wide")
 
 HEADERS = {
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36',
-    'Accept-Language': 'en-US,en;q=0.9',
-    'Accept-Encoding': 'gzip, deflate, br'
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Accept-Encoding": "gzip, deflate, br",
+    "Connection": "keep-alive"
 }
 
 @st.cache_data(ttl=60)
 def fetch_nse_data(symbol):
     session = requests.Session()
+    session.headers.update(HEADERS)
     base_url = "https://www.nseindia.com"
     oc_url = f"https://www.nseindia.com/api/option-chain-indices?symbol={symbol}"
     fut_url = f"https://www.nseindia.com/api/liveEquity-derivatives?symbol={symbol}"
     
     try:
-        session.get(base_url, headers=HEADERS, timeout=10)
+        # Step 1: Visit main site to get security cookies
+        session.get(base_url, timeout=10)
         
-        # Get Option Chain
-        oc_resp = session.get(oc_url, headers=HEADERS, timeout=10)
-        oc_data = oc_resp.json() if oc_resp.status_code == 200 else None
+        # Step 2: WAIT 2 seconds to act like a human
+        time.sleep(2)
         
-        # Get Futures
-        fut_resp = session.get(fut_url, headers=HEADERS, timeout=10)
-        fut_data = fut_resp.json() if fut_resp.status_code == 200 else None
+        # Step 3: Get data
+        oc_resp = session.get(oc_url, timeout=10)
+        fut_resp = session.get(fut_url, timeout=10)
         
-        return oc_data, fut_data
+        if oc_resp.status_code == 200 and fut_resp.status_code == 200:
+            return oc_resp.json(), fut_resp.json()
+        return None, None
     except Exception:
         return None, None
 
@@ -37,60 +42,66 @@ def process_terminal(oc_json, fut_json):
     if not oc_json or not fut_json:
         return None, None, None
     
-    # Process Options
-    raw_oc = oc_json['records']['data']
-    expiry = oc_json['records']['expiryDates'][0]
-    
-    opt_list = []
-    for item in [x for x in raw_oc if x['expiryDate'] == expiry]:
-        strike = item.get('strikePrice')
-        ce = item.get('CE', {})
-        pe = item.get('PE', {})
-        opt_list.append({
-            'CE_OI': ce.get('openInterest', 0),
-            'CE_Chg_OI': ce.get('changeinOpenInterest', 0),
-            'CE_LTP': ce.get('lastPrice', 0),
-            'Strike': strike,
-            'PE_LTP': pe.get('lastPrice', 0),
-            'PE_Chg_OI': pe.get('changeinOpenInterest', 0),
-            'PE_OI': pe.get('openInterest', 0)
-        })
-    df_opt = pd.DataFrame(opt_list)
-    
-    # Process 3 Expiry Futures
-    fut_list = []
-    for item in fut_json.get('data', []):
-        if item.get('metadata', {}).get('instrumentType') in ['Index Futures', 'Stock Futures']:
-            fut_list.append({
-                'Expiry': item.get('metadata', {}).get('expiryDate'),
-                'LTP': item.get('lastPrice', 0),
-                'Chg%': item.get('pChange', 0),
-                'OI': item.get('openInterest', 0),
-                'Chg_OI%': item.get('pchangeinOpenInterest', 0)
+    try:
+        # Process Options
+        raw_oc = oc_json['records']['data']
+        expiry = oc_json['records']['expiryDates'][0]
+        
+        opt_list = []
+        for item in [x for x in raw_oc if x['expiryDate'] == expiry]:
+            strike = item.get('strikePrice')
+            ce = item.get('CE', {})
+            pe = item.get('PE', {})
+            opt_list.append({
+                'CE_OI': ce.get('openInterest', 0),
+                'CE_Chg_OI': ce.get('changeinOpenInterest', 0),
+                'CE_LTP': ce.get('lastPrice', 0),
+                'Strike': strike,
+                'PE_LTP': pe.get('lastPrice', 0),
+                'PE_Chg_OI': pe.get('changeinOpenInterest', 0),
+                'PE_OI': pe.get('openInterest', 0)
             })
-    df_fut = pd.DataFrame(fut_list).head(3)
-    
-    total_ce = df_opt['CE_OI'].sum()
-    total_pe = df_opt['PE_OI'].sum()
-    pcr = round(total_pe / total_ce, 2) if total_ce > 0 else 0
-    resistance = df_opt.loc[df_opt['CE_OI'].idxmax()]['Strike']
-    support = df_opt.loc[df_opt['PE_OI'].idxmax()]['Strike']
-    
-    metrics = {
-        'PCR': pcr,
-        'Support': support,
-        'Resistance': resistance,
-        'Expiry': expiry,
-        'Time': datetime.now().strftime("%H:%M:%S")
-    }
-    
-    return df_opt, df_fut, metrics
+        df_opt = pd.DataFrame(opt_list)
+        
+        # Process 3 Expiry Futures
+        fut_list = []
+        for item in fut_json.get('data', []):
+            if item.get('metadata', {}).get('instrumentType') in ['Index Futures', 'Stock Futures']:
+                fut_list.append({
+                    'Expiry': item.get('metadata', {}).get('expiryDate'),
+                    'LTP': item.get('lastPrice', 0),
+                    'Chg%': item.get('pChange', 0),
+                    'OI': item.get('openInterest', 0),
+                    'Chg_OI%': item.get('pchangeinOpenInterest', 0)
+                })
+        df_fut = pd.DataFrame(fut_list).head(3)
+        
+        total_ce = df_opt['CE_OI'].sum()
+        total_pe = df_opt['PE_OI'].sum()
+        pcr = round(total_pe / total_ce, 2) if total_ce > 0 else 0
+        resistance = df_opt.loc[df_opt['CE_OI'].idxmax()]['Strike']
+        support = df_opt.loc[df_opt['PE_OI'].idxmax()]['Strike']
+        
+        metrics = {
+            'PCR': pcr,
+            'Support': support,
+            'Resistance': resistance,
+            'Expiry': expiry,
+            'Time': datetime.now().strftime("%H:%M:%S")
+        }
+        
+        return df_opt, df_fut, metrics
+    except Exception:
+        return None, None, None
 
 # --- UI DISPLAY ---
 st.title("Live NSE Terminal: Option Chain & Futures")
 
 symbol = st.sidebar.selectbox("Select Asset", ["NIFTY", "BANKNIFTY", "FINNIFTY"])
-st.sidebar.button("Refresh Data")
+
+# Upgraded Refresh Button
+if st.sidebar.button("Refresh Data"):
+    st.cache_data.clear() # Clears bad data immediately
 
 oc_data, fut_data = fetch_nse_data(symbol)
 df_opt, df_fut, metrics = process_terminal(oc_data, fut_data)
@@ -115,4 +126,4 @@ if metrics:
         use_container_width=True, height=600
     )
 else:
-    st.error("Attempting to bypass NSE block... Click 'Refresh Data' in 5 seconds.")
+    st.error("NSE Firewall blocked the request. Please wait 5 seconds and click 'Refresh Data' again.")
