@@ -12,14 +12,13 @@ def generate_demo_data(symbol):
     """Generate realistic mock data when live data is unavailable."""
     random.seed(hash(symbol) % 2**32)
     
-    # Define strikes based on symbol
     if symbol == "NIFTY":
         base = 22000
         strikes = list(range(base, base + 4000, 100))
     elif symbol == "BANKNIFTY":
         base = 44000
         strikes = list(range(base, base + 8000, 200))
-    else:  # FINNIFTY
+    else:
         base = 20000
         strikes = list(range(base, base + 3000, 100))
     
@@ -29,17 +28,16 @@ def generate_demo_data(symbol):
         ce_oi = random.randint(50000, 800000)
         pe_oi = random.randint(50000, 800000)
         opt_list.append({
-            'CE_OI': ce_oi,
-            'CE_Chg_OI': random.randint(-20000, 20000),
-            'CE_LTP': round(random.uniform(5, 300), 1),
+            'CE OI': ce_oi,
+            'CE Chg OI': random.randint(-20000, 20000),
+            'CE LTP': round(random.uniform(5, 300), 1),
             'Strike': strike,
-            'PE_LTP': round(random.uniform(5, 300), 1),
-            'PE_Chg_OI': random.randint(-20000, 20000),
-            'PE_OI': pe_oi
+            'PE LTP': round(random.uniform(5, 300), 1),
+            'PE Chg OI': random.randint(-20000, 20000),
+            'PE OI': pe_oi
         })
     df_opt = pd.DataFrame(opt_list)
     
-    # Futures data - 3 expiries
     fut_list = []
     for i in range(3):
         expiry_date = datetime.now().replace(day=28)
@@ -52,15 +50,15 @@ def generate_demo_data(symbol):
             'LTP': round(random.uniform(22000, 24000), 2),
             'Chg%': round(random.uniform(-2, 2), 2),
             'OI': random.randint(200000, 2000000),
-            'Chg_OI%': round(random.uniform(-5, 5), 2)
+            'Chg OI%': round(random.uniform(-5, 5), 2)
         })
     df_fut = pd.DataFrame(fut_list)
     
-    total_ce = df_opt['CE_OI'].sum()
-    total_pe = df_opt['PE_OI'].sum()
+    total_ce = df_opt['CE OI'].sum()
+    total_pe = df_opt['PE OI'].sum()
     pcr = round(total_pe / total_ce, 2) if total_ce else 1.2
-    resistance = df_opt.loc[df_opt['CE_OI'].idxmax()]['Strike']
-    support = df_opt.loc[df_opt['PE_OI'].idxmax()]['Strike']
+    resistance = df_opt.loc[df_opt['CE OI'].idxmax()]['Strike']
+    support = df_opt.loc[df_opt['PE OI'].idxmax()]['Strike']
     
     metrics = {
         'PCR': pcr,
@@ -87,14 +85,11 @@ def fetch_live_data(symbol):
     url = f"https://www.nseindia.com/api/option-chain-indices?symbol={symbol}"
     
     try:
-        # First visit homepage to get cookies
         session.get(base_url, timeout=15)
         time.sleep(2)
-        # Then fetch data
         resp = session.get(url, timeout=15)
         resp.raise_for_status()
-        data = resp.json()
-        return data
+        return resp.json()
     except Exception as e:
         st.warning(f"Live data not available: {str(e)[:100]}")
         return None
@@ -118,28 +113,28 @@ def process_live_data(data, symbol):
         ce = item.get('CE', {})
         pe = item.get('PE', {})
         opt_list.append({
-            'CE_OI': ce.get('openInterest', 0),
-            'CE_Chg_OI': ce.get('changeinOpenInterest', 0),
-            'CE_LTP': ce.get('lastPrice', 0),
+            'CE OI': ce.get('openInterest', 0),
+            'CE Chg OI': ce.get('changeinOpenInterest', 0),
+            'CE LTP': ce.get('lastPrice', 0),
             'Strike': strike,
-            'PE_LTP': pe.get('lastPrice', 0),
-            'PE_Chg_OI': pe.get('changeinOpenInterest', 0),
-            'PE_OI': pe.get('openInterest', 0)
+            'PE LTP': pe.get('lastPrice', 0),
+            'PE Chg OI': pe.get('changeinOpenInterest', 0),
+            'PE OI': pe.get('openInterest', 0)
         })
     df_opt = pd.DataFrame(opt_list)
     
-    # Simple futures placeholder (you can enhance later)
+    # Placeholder futures data
     df_fut = pd.DataFrame([
-        {'Expiry': expiry, 'LTP': 0, 'Chg%': 0, 'OI': 0, 'Chg_OI%': 0},
-        {'Expiry': expiry, 'LTP': 0, 'Chg%': 0, 'OI': 0, 'Chg_OI%': 0},
-        {'Expiry': expiry, 'LTP': 0, 'Chg%': 0, 'OI': 0, 'Chg_OI%': 0}
+        {'Expiry': expiry, 'LTP': 0, 'Chg%': 0, 'OI': 0, 'Chg OI%': 0},
+        {'Expiry': expiry, 'LTP': 0, 'Chg%': 0, 'OI': 0, 'Chg OI%': 0},
+        {'Expiry': expiry, 'LTP': 0, 'Chg%': 0, 'OI': 0, 'Chg OI%': 0}
     ])
     
-    total_ce = df_opt['CE_OI'].sum()
-    total_pe = df_opt['PE_OI'].sum()
+    total_ce = df_opt['CE OI'].sum()
+    total_pe = df_opt['PE OI'].sum()
     pcr = round(total_pe / total_ce, 2) if total_ce else 0
-    resistance = df_opt.loc[df_opt['CE_OI'].idxmax()]['Strike'] if not df_opt.empty else 0
-    support = df_opt.loc[df_opt['PE_OI'].idxmax()]['Strike'] if not df_opt.empty else 0
+    resistance = df_opt.loc[df_opt['CE OI'].idxmax()]['Strike'] if not df_opt.empty else 0
+    support = df_opt.loc[df_opt['PE OI'].idxmax()]['Strike'] if not df_opt.empty else 0
     
     metrics = {
         'PCR': pcr,
@@ -154,7 +149,6 @@ def process_live_data(data, symbol):
 # ------------------- UI -------------------
 st.title("Live NSE Terminal: Option Chain & Futures")
 
-# Sidebar
 symbol = st.sidebar.selectbox("Select Asset", ["NIFTY", "BANKNIFTY", "FINNIFTY"])
 force_demo = st.sidebar.checkbox("Force Demo Mode (mock data)", value=False)
 
@@ -175,8 +169,8 @@ else:
     else:
         df_opt, df_fut, metrics = generate_demo_data(symbol)
 
-# Display everything
-if metrics is not None:
+# Display
+if metrics:
     st.info(f"{metrics['Mode']} | Last Sync: {metrics['Time']} | Expiry: {metrics['Expiry']}")
     
     col1, col2, col3 = st.columns(3)
@@ -190,17 +184,8 @@ if metrics is not None:
     
     st.subheader("Live Option Chain")
     if not df_opt.empty:
-        # Safely apply styling only if columns exist
-        styled = df_opt.copy()
-        if 'CE_OI' in styled.columns:
-            styled = styled.style.background_gradient(cmap='Reds', subset=['CE_OI'])
-        if 'PE_OI' in styled.columns:
-            # Handle case where styled is already a Styler
-            if hasattr(styled, 'background_gradient'):
-                styled = styled.background_gradient(cmap='Greens', subset=['PE_OI'])
-            else:
-                styled = df_opt.style.background_gradient(cmap='Greens', subset=['PE_OI'])
-        st.dataframe(styled, use_container_width=True, height=600)
+        # Display plain table without gradients to avoid errors
+        st.dataframe(df_opt, use_container_width=True, height=600)
     else:
         st.warning("No option chain data available")
 else:
