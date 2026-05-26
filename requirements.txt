@@ -1,5 +1,5 @@
 streamlit
 pandas
+curl_cffi
 requests
 plotly
-cloudscraper
