@@ -1,4 +1,1 @@
-streamlit>=1.28.0
-pandas>=2.0.0
-nsepythonserver>=1.0.0
-cloudscraper>=1.2.71
+nselib
