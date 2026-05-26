@@ -1,4 +1,4 @@
 nselib
-streamlit
+nse
 pandas
-requests
+streamlit
